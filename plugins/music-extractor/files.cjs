@@ -83,39 +83,48 @@ async function runEngine(inputPath, outputPath, format, signal, separateAudioPat
     return format === 'mp4' ? videoDimensions(diagnostics) : null;
 }
 
-async function writeOutput(outputDirectory, name, extension, signal, create) {
+async function resolveOutputRoot(outputDirectory, signal) {
     const directory = outputDirectory || path.join(os.homedir(), 'Downloads', '音乐提取器');
     if (!absoluteFilePath(directory)) throw new Error('保存目录须为本机的绝对路径。');
     signal.throwIfAborted();
     await fs.mkdir(directory, { recursive: true });
     const outputRoot = await resolvePath(directory);
     if (!absoluteFilePath(outputRoot)) throw new Error('保存目录须位于本机。');
+    return outputRoot;
+}
+
+async function publishOutput(outputRoot, sourceFile, stemName, extension) {
+    const { size } = await fs.stat(sourceFile);
+    if (!size) throw new Error('生成的媒体文件为空。');
+
+    const stem = safeStem(stemName);
+    for (let index = 0; ; index++) {
+        const destination = path.join(outputRoot, stem + (index ? ' (' + index + ')' : '') + '.' + extension);
+        try {
+            // The same-directory hard link publishes a complete file without overwriting a concurrent result.
+            await fs.link(sourceFile, destination);
+            return { path: destination, format: extension, bytes: size };
+        } catch (failure) {
+            if (failure.code === 'EEXIST') continue;
+            if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes(failure.code)) throw failure;
+            try {
+                await fs.copyFile(sourceFile, destination, constants.COPYFILE_EXCL);
+                return { path: destination, format: extension, bytes: size };
+            } catch (copyError) {
+                if (copyError.code !== 'EEXIST') throw copyError;
+            }
+        }
+    }
+}
+
+async function writeOutput(outputDirectory, name, extension, signal, create) {
+    const outputRoot = await resolveOutputRoot(outputDirectory, signal);
     const temp = await fs.mkdtemp(path.join(outputRoot, '.music-extractor-'));
     try {
         const output = path.join(temp, 'output.' + extension);
         await create(output, temp);
         signal.throwIfAborted();
-        const { size } = await fs.stat(output);
-        if (!size) throw new Error('生成的媒体文件为空。');
-
-        const stem = safeStem(name);
-        for (let index = 0; ; index++) {
-            const destination = path.join(outputRoot, stem + (index ? ' (' + index + ')' : '') + '.' + extension);
-            try {
-                // The same-directory hard link publishes a complete file without overwriting a concurrent result.
-                await fs.link(output, destination);
-                return { path: destination, format: extension, bytes: size };
-            } catch (failure) {
-                if (failure.code === 'EEXIST') continue;
-                if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes(failure.code)) throw failure;
-                try {
-                    await fs.copyFile(output, destination, constants.COPYFILE_EXCL);
-                    return { path: destination, format: extension, bytes: size };
-                } catch (copyError) {
-                    if (copyError.code !== 'EEXIST') throw copyError;
-                }
-            }
-        }
+        return await publishOutput(outputRoot, output, name, extension);
     } finally {
         await fs.rm(temp, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
@@ -158,7 +167,7 @@ async function fetchMedia(address, platform, target, signal, prefixOnly = false)
             continue;
         }
         const type = response.headers.get('content-type') || '';
-        if (!response.ok || !response.body || (type && !/^(audio\/|video\/|(?:application|binary)\/octet-stream\b)/i.test(type))) {
+        if (!response.ok || !response.body || (type && !/^(audio\/|video\/|image\/|(?:application|binary)\/octet-stream\b)/i.test(type))) {
             await response.body?.cancel();
             throw new Error('平台未返回可下载的媒体文件（HTTP ' + response.status + '）。');
         }
@@ -210,7 +219,110 @@ async function selectVideo(media, resolution, signal) {
     return { ...media, ...video, audio_url: audioUrl, separateAudio: Boolean(separateAudio) };
 }
 
-async function download({ platform, format, outputDirectory, resolution }, media, signal) {
+async function detectAlbumExtension(filePath, isMotion) {
+    const handle = await fs.open(filePath, 'r');
+    let data;
+    let count = 0;
+    try {
+        data = Buffer.alloc(64);
+        const result = await handle.read(data, 0, data.length, 0);
+        count = result.bytesRead;
+    } finally {
+        await handle.close();
+    }
+    if (count < 4) throw new Error('下载内容为空或格式无效。');
+    const text = data.toString('ascii', 0, count);
+    if (count >= 12 && text.slice(4, 8) === 'ftyp') {
+        const brand = text.slice(8, 12).toLowerCase();
+        if (isMotion && !['avif', 'avis', 'heic', 'heix', 'mif1', 'm4a '].includes(brand)) return 'mp4';
+        if (!isMotion && (brand === 'avif' || brand === 'avis')) return 'avif';
+        if (!isMotion && (brand === 'heic' || brand === 'heix' || brand === 'mif1')) return 'heic';
+    }
+    if (!isMotion) {
+        if (data[0] === 255 && data[1] === 216 && data[2] === 255) return 'jpg';
+        if (count >= 8 && data[0] === 137 && data[1] === 80 && data[2] === 78 && data[3] === 71 &&
+            data[4] === 13 && data[5] === 10 && data[6] === 26 && data[7] === 10) return 'png';
+        if (count >= 12 && text.startsWith('RIFF') && text.slice(8, 12) === 'WEBP') return 'webp';
+        if (text.startsWith('GIF87a') || text.startsWith('GIF89a')) return 'gif';
+    }
+    throw new Error(isMotion ? '平台未返回可用的实况 MP4，文件没有保存。' : '平台未返回可用图片，文件没有保存。');
+}
+
+async function downloadAlbum({ format, outputDirectory, page }, media, signal) {
+    let items = media.images || [];
+    if (page !== undefined) {
+        items = items.filter(item => item.index === page);
+        if (!items.length) throw new Error('图集中没有第 ' + page + ' 张内容。');
+    }
+    if (format !== 'original' && !items.some(item => mediaAddress(item.video_url, 'douyin'))) {
+        throw new Error('所选图集项没有可提取音轨的实况片段。');
+    }
+
+    const root = await resolveOutputRoot(outputDirectory, signal);
+    const titlePart = safeStem(media.title).slice(0, 55);
+    const folderName = safeStem(titlePart + '_' + media.id);
+    const albumDirPath = path.join(root, folderName);
+    await fs.mkdir(albumDirPath, { recursive: true });
+    const albumDir = await resolvePath(albumDirPath);
+    if (!absoluteFilePath(albumDir)) throw new Error('保存目录须位于本机。');
+
+    const temp = await fs.mkdtemp(path.join(albumDir, '.music-extractor-'));
+    const files = [];
+    try {
+        for (const item of items) {
+            signal.throwIfAborted();
+            const prefix = String(item.index).padStart(2, '0');
+            if (format === 'original') {
+                const imgAddr = mediaAddress(item.image_url, 'douyin');
+                if (imgAddr) {
+                    const rawImg = path.join(temp, `${prefix}_img.source`);
+                    await fetchMedia(imgAddr, 'douyin', rawImg, signal);
+                    const ext = await detectAlbumExtension(rawImg, false);
+                    const saved = await publishOutput(albumDir, rawImg, prefix, ext);
+                    files.push({ index: item.index, kind: 'image', ...saved });
+                }
+                const vidAddr = mediaAddress(item.video_url, 'douyin');
+                if (vidAddr) {
+                    const rawVid = path.join(temp, `${prefix}_vid.source`);
+                    await fetchMedia(vidAddr, 'douyin', rawVid, signal);
+                    const ext = await detectAlbumExtension(rawVid, true);
+                    const saved = await publishOutput(albumDir, rawVid, `${prefix}_实况`, ext);
+                    files.push({ index: item.index, kind: 'motion', ...saved });
+                }
+            } else {
+                const vidAddr = mediaAddress(item.video_url, 'douyin');
+                if (vidAddr) {
+                    const rawVid = path.join(temp, `${prefix}_vid.source`);
+                    await fetchMedia(vidAddr, 'douyin', rawVid, signal);
+                    await detectAlbumExtension(rawVid, true);
+                    const outAudio = path.join(temp, `${prefix}_out.${format}`);
+                    await runEngine(rawVid, outAudio, format, signal);
+                    const saved = await publishOutput(albumDir, outAudio, `${prefix}_实况`, format);
+                    files.push({ index: item.index, kind: 'audio', ...saved });
+                }
+            }
+        }
+    } finally {
+        await fs.rm(temp, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+
+    if (!files.length) throw new Error('图集中没有可下载的抖音官方媒体地址。');
+    const totalBytes = files.reduce((sum, entry) => sum + entry.bytes, 0);
+    return {
+        platform: 'douyin',
+        id: media.id,
+        title: media.title,
+        isAlbum: true,
+        mediaType: media.media_type,
+        directory: albumDir,
+        fileCount: files.length,
+        bytes: totalBytes,
+        files
+    };
+}
+
+async function download({ platform, format, outputDirectory, resolution, page }, media, signal) {
+    if (media.isAlbum) return downloadAlbum({ format, outputDirectory, page }, media, signal);
     const source = platform === 'netease' ? media.url :
         platform === 'bilibili' && format !== 'original' ? media.audio_url : media.video_url;
     const address = mediaAddress(source, platform);
@@ -243,4 +355,4 @@ async function download({ platform, format, outputDirectory, resolution }, media
         ...(dimensions ? { resolution: `${dimensions.pixels}p` } : {}) };
 }
 
-module.exports = { download, extractAudio, mediaAddress, selectVideo };
+module.exports = { download, downloadAlbum, detectAlbumExtension, extractAudio, mediaAddress, selectVideo };

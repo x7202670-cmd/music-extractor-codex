@@ -29,18 +29,34 @@ codex mcp add music-extractor -- node $entry
 - 「解析这个 B 站链接的第 2 P，再把视频音轨保存成 WAV。」
 - 「列出这个 B 站视频当前可用的分辨率，下载 720P 的 MP4。」
 - 「下载这个抖音视频目前能取得的最高分辨率。」
+- 「解析并下载这个抖音图集（包含静态图片和实况视频）。」
 - 「把 `C:/Videos/input.mp4` 的音轨提取成 MP3。」
 
 下载和转码会返回输出文件的绝对路径。默认保存到用户目录下的 `Downloads/音乐提取器`。同名输出会自动添加编号。
 
-`resolve_media` 和 `download_media` 的 `resolution` 参数适用于 B 站和抖音。默认 `best`，也可指定 `720p`、`1080p` 或 `2160p` 等档位。解析会列出本次取得的可选档位。指定档位不可用时，下载会报错并列出本次找到的档位。下载 MP4 时返回实际分辨率和画面宽高。分辨率以画面短边为准，例如竖屏 720×960 为 `720p`。B 站的 `quality` 字段另行报告平台档位。
+`resolve_media` 和 `download_media` 的 `resolution` 参数适用于 B 站和抖音视频。默认 `best`，也可指定 `720p`、`1080p` 或 `2160p` 等档位。解析会列出本次取得的可选档位。指定档位不可用时，下载会报错并列出本次找到的档位。下载 MP4 时返回实际分辨率和画面宽高。分辨率以画面短边为准，例如竖屏 720×960 为 `720p`。B 站的 `quality` 字段另行报告平台档位。
+
+对抖音图集调用 `download_media` 时，默认会创建独立图集子目录并保存全部原图（自动识别 `.jpg` / `.png` / `.webp` / `.avif` / `.heic`）及实况片段（`01_实况.mp4`），也可通过 `page` 参数只下载第几张。
 
 ## 功能范围
 
 - 网易云支持搜索、单曲和歌单解析。未配置 Cookie 时按访客权限访问（VIP 歌曲通常返回 30 秒试听并标记 `isPreview`）；导入本人网易云 `MUSIC_U` Cookie 后，可按账号权限下载完整音频与无损/高码率音质（如 `lossless`、`hires` 等）。
 - B 站支持 BV/AV 号、分享链接和分 P。插件通过官方播放接口查询 DASH 和经实际请求确认的直出档位。平台提供分离的视频流和音轨时，插件可以把两者封装成 MP4。
-- 抖音支持公开视频和分享文案，分辨率取决于官方分享页提供的媒体流。
+- 抖音支持公开视频、分享文案以及**图集（静态图片 / 实况 Live Photo）**，分辨率取决于官方分享页提供的媒体流；当平台开启访问验证导致直接解析受限时，可直接通过下方独立浏览器采集脚本导出 JSON 后粘贴给插件下载，无需依赖原桌面程序。
 - 本地音频提取在电脑上运行。支持 MP3、FLAC、WAV。
+
+## 抖音图集浏览器辅助采集（直接解析受限时）
+
+无需安装任何额外软件，只需用电脑浏览器正常打开抖音图集页面：
+
+1. 将下面的单行脚本保存为浏览器书签的「网址」（或在图集页面按 `F12` 粘贴到浏览器控制台去掉 `javascript:` 前缀后回车运行）：
+
+```text
+javascript:(()=>{if(!/(^|\.)douyin\.com$/.test(location.hostname)){alert('请在抖音作品页面使用');return;}const id=location.pathname.match(/\/(?:note|video|slides)\/(\d{16,21})/);if(!id){alert('请先打开具体作品页面');return;}const root=document.querySelector('main[data-e2e="note-detail"]');if(!root){alert('当前页不是已加载的图集，请等待图片出现后重试');return;}const seen=new Set();const rows=Array.from(root.querySelectorAll('.dySwiperSlide')).map((s,i)=>({index:i+1,image_url:s.querySelector('img[src*="aweme_images"]')?.currentSrc||'',video_url:s.querySelector('video')?.currentSrc||''}));if(rows.some(x=>!x.image_url&&!x.video_url)){alert('请先逐张浏览图集，等待全部图片加载后再采集');return;}const images=rows.filter(x=>{const key=x.image_url||x.video_url;if(!key||seen.has(key))return false;seen.add(key);return true;});if(!images.length){alert('未发现图片；请等待图集显示后重试');return;}const data={format:'MusicExtractor.DouyinAlbum.v1',source_url:location.origin+location.pathname,id:id[1],title:'抖音图集_'+id[1],author:'网页导入',images};prompt('复制全部内容，直接粘贴给音乐提取器 AI 插件即可解析和保存。仅导出当前图集的公开媒体地址。',JSON.stringify(data));})();
+```
+
+2. 在网页上逐张浏览图集，确认图片和实况加载完成后点击该书签。
+3. 复制弹框中的 JSON（`MusicExtractor.DouyinAlbum.v1`），直接在对话中发给 `@音乐提取器` 让插件解析或下载（支持保存图片和实况 MP4）。该脚本仅读取当前页面已加载的公开媒体地址，不读取 Cookie 或账号信息。
 
 ## 账号 Cookie 导入（网易云音乐与 B 站高画质）
 

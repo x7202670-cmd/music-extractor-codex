@@ -12,14 +12,14 @@ const integer = (minimum, maximum, description) => ({ type: 'integer', minimum, 
 const limit = integer(1, 50, '最多返回多少首歌曲，默认 20。');
 const outputDirectory = string('用户指定的本机绝对保存目录。省略时使用用户目录下的 Downloads/音乐提取器。', 32767);
 const mediaReference = {
-    platform: choice(platforms, 'netease 为网易云单曲，bilibili 为 B 站视频，douyin 为抖音公开视频。'),
-    input: string('平台的单曲或视频分享链接、分享文案，或对应的内容 ID。'),
+    platform: choice(platforms, 'netease 为网易云单曲，bilibili 为 B 站视频，douyin 为抖音公开视频或图集。'),
+    input: string('平台的单曲、视频或图集分享链接、分享文案、作品 ID，或浏览器导出的图集 JSON（MusicExtractor.DouyinAlbum.v1）。', 262144),
     quality: choice(qualities, '仅用于网易云歌曲。默认 lossless，实际音质取决于平台返回。'),
     resolution: {
-        ...string('仅用于 B 站和抖音。默认 best，选择平台当前提供的最高分辨率。也可指定档位，例如 720p、1080p、2160p。', 5),
+        ...string('仅用于 B 站和抖音视频。默认 best，选择平台当前提供的最高分辨率。也可指定档位，例如 720p、1080p、2160p。', 5),
         pattern: '^(best|[1-9][0-9]{2,3}p)$'
     },
-    page: integer(1, 99999999, '仅用于 B 站。省略时按链接的 p 参数选择分 P。')
+    page: integer(1, 99999999, '仅用于 B 站分 P，或抖音图集指定下载第几张（省略则下载全部）。')
 };
 
 function summarizeTrack(track) {
@@ -34,7 +34,8 @@ function videoResolution(media) {
 
 async function resolveForTool(args, signal) {
     const media = await resolve(args, signal);
-    return args.platform === 'netease' ? media : selectVideo(media, args.resolution ?? 'best', signal);
+    if (args.platform === 'netease' || media.isAlbum) return media;
+    return selectVideo(media, args.resolution ?? 'best', signal);
 }
 
 function describe(media, platform, includeLyrics) {
@@ -43,6 +44,28 @@ function describe(media, platform, includeLyrics) {
             cover: media.pic, quality: media.level, vip: Boolean(media.fee), isPreview: Boolean(media.is_trial),
             downloadAvailable: Boolean(mediaAddress(media.url, platform)), bytes: media.size_bytes,
             ...(includeLyrics ? { lyrics: (media.processedLyrics || media.lyric || '').slice(0, 16000) } : {}) };
+    }
+    if (platform === 'douyin' && media.isAlbum) {
+        return {
+            platform,
+            id: media.id,
+            title: media.title,
+            author: media.author,
+            duration: media.duration,
+            cover: media.cover,
+            quality: media.quality,
+            isAlbum: true,
+            mediaType: media.media_type,
+            imageCount: media.imageCount,
+            motionCount: media.motionCount,
+            downloadAvailable: media.images.some(item =>
+                Boolean(mediaAddress(item.image_url, platform) || mediaAddress(item.video_url, platform))),
+            items: media.images.map(item => ({
+                index: item.index,
+                hasImage: Boolean(mediaAddress(item.image_url, platform)),
+                hasMotion: Boolean(mediaAddress(item.video_url, platform))
+            }))
+        };
     }
     return { platform, id: media.id, title: media.title, author: media.author, duration: media.duration,
         cover: media.cover, page: media.page, pageCount: media.pageCount, pageTitle: media.pageTitle,
@@ -67,7 +90,7 @@ const definitions = [
             const result = await fromPlatform(() => backend.handleSearch(args.keyword, args.limit ?? 20));
             return { platform: 'netease', total: result.total, tracks: result.data.map(summarizeTrack) };
         }),
-    tool('resolve_media', '解析音乐或视频链接', '查看网易云单曲、B 站或抖音公开视频的详情、分 P、可选分辨率和下载可用性。',
+    tool('resolve_media', '解析音乐或视频链接', '查看网易云单曲、B 站视频或抖音公开视频/图集（含实况及导出 JSON）的详情、分 P、可选分辨率和下载可用性。',
         { ...mediaReference, includeLyrics: { type: 'boolean', description: '是否在网易云单曲结果中附上歌词，默认 false。' } },
         ['platform', 'input'], true, true,
         async (args, signal) => describe(await resolveForTool(args, signal), args.platform, args.includeLyrics)),
@@ -83,11 +106,14 @@ const definitions = [
                 total: playlist.trackCount, availableTracks: playlist.returnedTrackCount, tracksComplete: playlist.tracksComplete,
                 offset, nextOffset: offset + tracks.length < playlist.tracks.length ? offset + tracks.length : null, tracks };
         }),
-    tool('download_media', '下载音乐或视频', '保存平台当前提供的媒体。视频可保存为 MP4，或从视频音轨生成 MP3、FLAC、WAV。',
-        { ...mediaReference, format: choice(['original', ...audioFormats], '默认 original。网易云保留源音频，视频封装成 MP4。'),
+    tool('download_media', '下载音乐或视频', '保存平台当前提供的媒体。视频可保存为 MP4 或提取 MP3/FLAC/WAV；抖音图集可保存全部或指定序号的原图及实况 MP4。',
+        { ...mediaReference, format: choice(['original', ...audioFormats], '默认 original。网易云保留源音频，视频封装成 MP4，抖音图集保存原图和实况 MP4。'),
             outputDirectory }, ['platform', 'input'], false, true,
         async (args, signal) => {
             const media = await resolveForTool(args, signal);
+            if (media.isAlbum) {
+                return download({ ...args, format: args.format ?? 'original' }, media, signal);
+            }
             if (args.resolution && args.resolution !== 'best' && !media.resolution) {
                 const available = videoResolution(media).availableResolutions;
                 const details = available.length ? '当前可选：' + available.join('、') + '。' : '平台当前未返回可确认的分辨率。';

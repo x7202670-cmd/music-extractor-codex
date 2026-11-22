@@ -913,6 +913,158 @@ function douyinStreams(video) {
     }).filter(stream => stream.url);
 }
 
+const DOUYIN_ALBUM_BOOKMARKLET = "javascript:(()=>{if(!/(^|\\.)douyin\\.com$/.test(location.hostname)){alert('请在抖音作品页面使用');return;}const id=location.pathname.match(/\\/(?:note|video|slides)\\/(\\d{16,21})/);if(!id){alert('请先打开具体作品页面');return;}const root=document.querySelector('main[data-e2e=\"note-detail\"]');if(!root){alert('当前页不是已加载的图集，请等待图片出现后重试');return;}const seen=new Set();const rows=Array.from(root.querySelectorAll('.dySwiperSlide')).map((s,i)=>({index:i+1,image_url:s.querySelector('img[src*=\"aweme_images\"]')?.currentSrc||'',video_url:s.querySelector('video')?.currentSrc||''}));if(rows.some(x=>!x.image_url&&!x.video_url)){alert('请先逐张浏览图集，等待全部图片加载后再采集');return;}const images=rows.filter(x=>{const key=x.image_url||x.video_url;if(!key||seen.has(key))return false;seen.add(key);return true;});if(!images.length){alert('未发现图片；请等待图集显示后重试');return;}const data={format:'MusicExtractor.DouyinAlbum.v1',source_url:location.origin+location.pathname,id:id[1],title:'抖音图集_'+id[1],author:'网页导入',images};prompt('复制全部内容，直接粘贴给音乐提取器 AI 插件即可解析和保存。仅导出当前图集的公开媒体地址。',JSON.stringify(data));})();";
+
+function isOfficialDouyinPageUrl(value) {
+    try {
+        const address = new URL(value);
+        return address.protocol === 'https:' && !address.username && !address.password && !address.port &&
+            ['douyin.com', 'iesdouyin.com'].some(d => address.hostname === d || address.hostname.endsWith('.' + d));
+    } catch {
+        return false;
+    }
+}
+
+function isDouyinAlbumMediaUrl(value) {
+    try {
+        const address = new URL(value);
+        return address.protocol === 'https:' && !address.username && !address.password && !address.port &&
+            ['douyinpic.com', 'douyinvod.com', 'byteimg.com'].some(d => address.hostname === d || address.hostname.endsWith('.' + d));
+    } catch {
+        return false;
+    }
+}
+
+function buildDouyinAlbumResult({ id, title, author, authorFace = '', images, quality, source }) {
+    const motionCount = images.filter(item => Boolean(item.video_url)).length;
+    return {
+        code: 200,
+        platform: 'douyin',
+        platform_name: '抖音 (Douyin)',
+        id,
+        title: title || `抖音图集_${id}`,
+        author: author || '抖音创作者',
+        author_face: authorFace,
+        cover: images.find(item => item.image_url)?.image_url || '',
+        isAlbum: true,
+        media_type: motionCount > 0 ? 'live_photo' : 'images',
+        images,
+        imageCount: images.length,
+        motionCount,
+        quality,
+        duration: `${images.length} 张 · ${motionCount} 个实况片段`,
+        size: '按原格式保存',
+        size_bytes: 0,
+        source
+    };
+}
+
+function parseDouyinAlbumImport(rawText, expectedId = '') {
+    if (typeof rawText !== 'string' || !rawText.trim() || rawText.length > 2 * 1024 * 1024) {
+        throw new Error('请粘贴有效的图集采集结果 JSON，最多 2 MB。');
+    }
+    let data;
+    try {
+        data = JSON.parse(rawText.replace(/^\uFEFF/, '').trim());
+    } catch {
+        throw new Error('图集采集结果不是合法的 JSON 格式。');
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data) || data.format !== 'MusicExtractor.DouyinAlbum.v1') {
+        throw new Error('不是音乐提取器的图集采集结果（format 须为 MusicExtractor.DouyinAlbum.v1）。');
+    }
+    const id = typeof data.id === 'string' ? data.id.trim() : '';
+    const sourceUrl = typeof data.source_url === 'string' ? data.source_url.trim() : '';
+    const sourceId = sourceUrl.match(/(?:\/(?:share\/)?(?:video|note|slides)\/|[?&]modal_id=)(\d{16,21})(?:\D|$)/i)?.[1] || '';
+    if (!/^\d{16,21}$/.test(id) || !isOfficialDouyinPageUrl(sourceUrl) || sourceId !== id) {
+        throw new Error('采集结果的作品地址或编号不一致。');
+    }
+    if (expectedId && id !== expectedId) {
+        throw new Error('采集结果与输入的作品编号不同，请确认浏览器打开了同一作品。');
+    }
+    if (!Array.isArray(data.images) || data.images.length === 0 || data.images.length > 100) {
+        throw new Error('采集结果没有图片，或数量超过 100 张。');
+    }
+    const seen = new Set();
+    const images = [];
+    for (const item of data.images) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('图集项目格式无效。');
+        const index = item.index;
+        if (!Number.isInteger(index) || index < 1 || index > 100 || seen.has(index)) {
+            throw new Error('图片序号无效或重复，请重新采集。');
+        }
+        seen.add(index);
+        const still = typeof item.image_url === 'string' ? item.image_url.trim() : '';
+        const motion = typeof item.video_url === 'string' ? item.video_url.trim() : '';
+        if ((still && !isDouyinAlbumMediaUrl(still)) || (motion && !isDouyinAlbumMediaUrl(motion))) {
+            throw new Error('采集结果含非抖音媒体地址，请重新采集。');
+        }
+        if (!still && !motion) throw new Error('采集结果含空的媒体项目。');
+        images.push({ index, image_url: still, video_url: motion });
+    }
+    images.sort((a, b) => a.index - b.index);
+    return buildDouyinAlbumResult({
+        id,
+        title: typeof data.title === 'string' ? data.title.trim() : '',
+        author: typeof data.author === 'string' && data.author.trim() ? data.author.trim() : '网页导入',
+        images,
+        quality: '浏览器公开页面',
+        source: 'browser_import'
+    });
+}
+
+function firstDouyinMediaUrl(node) {
+    if (!node) return '';
+    if (typeof node === 'string') {
+        const normalized = node.replace(/^http:\/\//i, 'https://');
+        return isPlatformMediaUrl(normalized, 'douyin') ? normalized : '';
+    }
+    const list = Array.isArray(node.url_list) ? node.url_list : (Array.isArray(node.urlList) ? node.urlList : []);
+    for (const raw of list) {
+        if (typeof raw !== 'string') continue;
+        const normalized = raw.replace(/^http:\/\//i, 'https://');
+        if (isPlatformMediaUrl(normalized, 'douyin')) return normalized;
+    }
+    return '';
+}
+
+function readDouyinAlbumItem(item, awemeId) {
+    if (!item || typeof item !== 'object') return null;
+    let rawImages = null;
+    for (const key of ['images', 'image_list', 'image_infos', 'original_images']) {
+        const candidate = (Array.isArray(item.image_post_info?.[key]) && item.image_post_info[key].length)
+            ? item.image_post_info[key]
+            : (Array.isArray(item[key]) && item[key].length ? item[key] : null);
+        if (candidate) {
+            rawImages = candidate;
+            break;
+        }
+    }
+    if (!rawImages) return null;
+
+    const images = [];
+    for (let i = 0; i < rawImages.length && i < 100; i++) {
+        const entry = rawImages[i];
+        const still = firstDouyinMediaUrl(entry) ||
+            firstDouyinMediaUrl(entry?.display_image) ||
+            firstDouyinMediaUrl(entry?.origin_image);
+        const motion = firstDouyinMediaUrl(entry?.video?.play_addr) ||
+            firstDouyinMediaUrl(entry?.video_play_addr);
+        if (!still && !motion) continue;
+        images.push({ index: images.length + 1, image_url: still, video_url: motion });
+    }
+    if (!images.length) return null;
+
+    return buildDouyinAlbumResult({
+        id: awemeId,
+        title: typeof item.desc === 'string' ? item.desc.trim() : '',
+        author: item.author?.nickname || item.author?.name || '抖音创作者',
+        authorFace: firstDouyinMediaUrl(item.author?.avatar_thumb),
+        images,
+        quality: '平台返回原图',
+        source: 'official'
+    });
+}
+
 // 抖音 ttwid 凭据缓存
 let cachedTtwid = null;
 let ttwidExpireTime = 0;
@@ -955,19 +1107,27 @@ async function getDouyinTtwid() {
 }
 
 // API 实现：解析抖音视频与图集 (Douyin)
-async function handleDouyinParse(input, { officialOnly = false } = {}) {
-    if (!input) return { code: 400, msg: '请输入抖音分享文案或链接' };
+async function handleDouyinParse(input, { officialOnly = false, isNote = false } = {}) {
+    if (!input) return { code: 400, msg: '请输入抖音分享文案、链接或图集采集 JSON' };
 
     let rawStr = String(input).trim();
+    if (rawStr.replace(/^\uFEFF/, '').startsWith('{')) {
+        try {
+            return parseDouyinAlbumImport(rawStr);
+        } catch (err) {
+            return { code: 400, msg: err.message };
+        }
+    }
+
     let targetUrl = '';
 
-    const matchUrl = rawStr.match(/https?:\/\/(?:[a-zA-Z0-9.-]+\.)?douyin\.com\/[^\s]+/);
+    const matchUrl = rawStr.match(/https?:\/\/(?:[a-zA-Z0-9.-]+\.)?(?:douyin|iesdouyin)\.com\/[^\s]+/i);
     if (matchUrl) {
         targetUrl = matchUrl[0];
     } else if (/^\d{16,21}$/.test(rawStr)) {
-        targetUrl = `https://www.douyin.com/video/${rawStr}`;
+        targetUrl = `https://www.douyin.com/${isNote ? 'note' : 'video'}/${rawStr}`;
     } else {
-        return { code: 400, msg: '未在输入内容中识别到有效的抖音分享链接或视频ID' };
+        return { code: 400, msg: '未在输入内容中识别到有效的抖音分享链接或作品 ID' };
     }
 
     // 1. 如果是短链接 v.douyin.com，追踪 302 重定向获取长链接
@@ -985,7 +1145,7 @@ async function handleDouyinParse(input, { officialOnly = false } = {}) {
                 const loc = redirectRes.headers.get('location');
                 if (loc) {
                     cur = loc.startsWith('http') ? loc : new URL(loc, cur).href;
-                    if (cur.includes('/video/') || cur.includes('/share/video/')) break;
+                    if (/\/(?:share\/)?(?:video|note|slides)\/\d+/i.test(cur)) break;
                 } else {
                     break;
                 }
@@ -996,21 +1156,29 @@ async function handleDouyinParse(input, { officialOnly = false } = {}) {
         targetUrl = cur;
     }
 
-    // 2. 提取视频 ID (aweme_id)
+    // 2. 提取作品 ID (aweme_id)
     let awemeId = '';
-    const idMatch = targetUrl.match(/\/video\/(\d+)/) || targetUrl.match(/\/share\/video\/(\d+)/) || targetUrl.match(/modal_id=(\d+)/) || targetUrl.match(/\b\d{18,21}\b/);
+    const idMatch = targetUrl.match(/(?:\/(?:share\/)?(?:video|note|slides)\/|[?&]modal_id=)(\d{16,21})(?:\D|$)/i) || targetUrl.match(/\b\d{18,21}\b/);
     if (idMatch) {
         awemeId = idMatch[1] || idMatch[0];
     }
+    const note = Boolean(isNote) || /\/(?:note|slides)\//i.test(targetUrl);
 
-    // 策略 A: 官方原生移动端分享协议 + 游客凭据直析 (首选，无水印1080P/720P原画)
+    // 策略 A: 官方原生移动端分享协议 + 游客凭据直析 (首选，无水印原画及图集/实况)
     if (awemeId) {
         try {
             const ttwid = await getDouyinTtwid();
-            const shareUrls = [
-                `https://www.douyin.com/share/video/${awemeId}`,
-                `https://www.iesdouyin.com/share/video/${awemeId}`
-            ];
+            const shareUrls = note
+                ? [
+                    `https://www.iesdouyin.com/share/note/${awemeId}/`,
+                    `https://www.douyin.com/share/note/${awemeId}/`,
+                    `https://www.iesdouyin.com/share/video/${awemeId}/`,
+                    `https://www.douyin.com/share/video/${awemeId}/`
+                ]
+                : [
+                    `https://www.douyin.com/share/video/${awemeId}`,
+                    `https://www.iesdouyin.com/share/video/${awemeId}`
+                ];
 
             const mobileUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
 
@@ -1041,14 +1209,34 @@ async function handleDouyinParse(input, { officialOnly = false } = {}) {
                         if (routerData.loaderData) {
                             for (const k of Object.keys(routerData.loaderData)) {
                                 const val = routerData.loaderData[k];
-                                if (val && val.videoInfoRes && val.videoInfoRes.item_list && val.videoInfoRes.item_list[0]) {
-                                    item = val.videoInfoRes.item_list[0];
+                                const list = val?.videoInfoRes?.item_list || val?.noteInfoRes?.item_list;
+                                if (list && list[0]) {
+                                    item = list[0];
                                     break;
                                 }
                             }
                         }
 
                         if (item) {
+                            let album = readDouyinAlbumItem(item, awemeId);
+                            if (album) {
+                                // 详情接口可能包含分享页省略的实况 MP4 地址
+                                try {
+                                    const detailRes = await fetch(`https://www.douyin.com/aweme/v1/web/aweme/detail/?aid=6383&aweme_id=${awemeId}`, {
+                                        headers: reqHeaders,
+                                        signal: AbortSignal.timeout(5000)
+                                    });
+                                    if (detailRes.ok) {
+                                        const detailJson = await detailRes.json();
+                                        const enriched = readDouyinAlbumItem(detailJson?.aweme_detail, awemeId);
+                                        if (enriched && enriched.motionCount > album.motionCount) {
+                                            album = enriched;
+                                        }
+                                    }
+                                } catch {}
+                                return album;
+                            }
+
                             // 提取原画视频地址并去除官方 playwm 水印
                             let rawPlayUrl = '';
                             if (item.video && item.video.play_addr && item.video.play_addr.url_list && item.video.play_addr.url_list.length > 0) {
@@ -1134,7 +1322,14 @@ async function handleDouyinParse(input, { officialOnly = false } = {}) {
         }
     }
 
-    if (officialOnly) return { code: 404, msg: '未取得抖音公开分享视频，链接可能已失效或当前网络无法访问' };
+    if (officialOnly) {
+        return {
+            code: 404,
+            msg: note
+                ? '未直接获取到该抖音图集数据（平台可能开启了页面验证）。可在浏览器打开该图集作品页，待每张图片加载后运行 README 中的图集采集脚本，再将导出的 JSON（MusicExtractor.DouyinAlbum.v1）直接粘贴给本插件解析和保存。'
+                : '未取得抖音公开分享视频，链接可能已失效或当前网络无法访问'
+        };
+    }
 
     // 策略 B: DevTool 开放接口兜底
     try {
@@ -1145,6 +1340,8 @@ async function handleDouyinParse(input, { officialOnly = false } = {}) {
             const dtData = await dtRes.json();
             if (dtData.code === 200 && dtData.data) {
                 const d = dtData.data;
+                const album = readDouyinAlbumItem(d, awemeId || 'douyin_album');
+                if (album) return album;
                 const vUrl = (d.video && d.video.url) || d.url || '';
                 if (vUrl) {
                     return {
@@ -1483,4 +1680,5 @@ function isPlatformMediaUrl(value, platform) {
 }
 
 module.exports = { server, handleSearch, handleSongParse, handlePlaylistParse, handleBilibiliParse, handleDouyinParse,
-    extractSongId, extractPlaylistId, mergeLyrics, isPlatformMediaUrl, selectVideoStream };
+    extractSongId, extractPlaylistId, mergeLyrics, isPlatformMediaUrl, selectVideoStream,
+    parseDouyinAlbumImport, readDouyinAlbumItem, DOUYIN_ALBUM_BOOKMARKLET };

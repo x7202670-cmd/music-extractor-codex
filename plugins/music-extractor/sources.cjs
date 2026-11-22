@@ -19,9 +19,9 @@ const sources = {
         invalid: '请提供 B 站视频链接、BV 号或 AV 号。'
     },
     douyin: {
-        hosts: ['www.douyin.com', 'm.douyin.com', 'douyin.com', 'v.douyin.com', 'www.iesdouyin.com'],
+        hosts: ['www.douyin.com', 'm.douyin.com', 'douyin.com', 'v.douyin.com', 'www.iesdouyin.com', 'iesdouyin.com'],
         shortHosts: ['v.douyin.com'],
-        invalid: '请提供抖音公开视频链接、分享文案或纯数字视频 ID。'
+        invalid: '请提供抖音公开视频/图集链接、分享文案、纯数字作品 ID，或浏览器导出的图集 JSON。'
     }
 };
 
@@ -48,6 +48,10 @@ function parseId(platform, input) {
 }
 
 async function identify(platform, input, kind, signal) {
+    if (platform === 'douyin' && input.trim().replace(/^\uFEFF/, '').startsWith('{')) {
+        const album = backend.parseDouyinAlbumImport(input);
+        return { id: album.id, album };
+    }
     const directId = parseId(platform, input);
     if (directId) return { id: directId };
 
@@ -65,15 +69,13 @@ async function identify(platform, input, kind, signal) {
         } else if (platform === 'bilibili') {
             id = parseId(platform, route.pathname.match(/^\/video\/([^/]+)\/?$/i)?.[1] || '');
         } else {
-            if (/\/(?:note|slides)\//i.test(route.pathname)) {
-                throw new Error('此链接是抖音图集，请在原软件的浏览器辅助功能中处理。');
-            }
-            const match = route.pathname.match(/\/(?:share\/)?video\/(\d+)\/?$/i);
+            const match = route.pathname.match(/\/(?:share\/)?(?:video|note|slides)\/(\d+)\/?$/i);
             id = parseId(platform, match?.[1] || route.searchParams.get('modal_id') || '');
         }
         if (id) {
             const page = platform === 'bilibili' ? route.searchParams.get('p') : null;
-            return { id, page: page && /^\d{1,8}$/.test(page) && Number(page) > 0 ? Number(page) : undefined };
+            const isNote = platform === 'douyin' && /\/(?:note|slides)\//i.test(route.pathname);
+            return { id, page: page && /^\d{1,8}$/.test(page) && Number(page) > 0 ? Number(page) : undefined, isNote };
         }
         if (!sources[platform].shortHosts.includes(url.hostname) || hop === 4) break;
         const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
@@ -155,7 +157,8 @@ async function resolve({ platform, input, quality, page, resolution }, signal) {
             officialOnly: true, page: page ?? reference.page ?? 1, resolution, session, signal
         }));
     }
-    return fromPlatform(() => backend.handleDouyinParse(reference.id, { officialOnly: true }));
+    if (reference.album) return reference.album;
+    return fromPlatform(() => backend.handleDouyinParse(reference.id, { officialOnly: true, isNote: reference.isNote }));
 }
 
 module.exports = { backend, identify, resolve, fromPlatform };
