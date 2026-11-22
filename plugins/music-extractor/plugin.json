@@ -2,14 +2,14 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "music-extractor",
   "version": "1.2.0",
-  "description": "搜索网易云音乐，解析B站和抖音分享链接，并在 Windows 本机下载和提取音频。",
+  "description": "搜索网易云音乐，解析B站和抖音视频/图集（含实况），并在本机下载和提取音频。",
   "extensions": {
     "com.openai": {
       "requires_local_executor": true,
       "interface": {
         "displayName": "音乐提取器",
         "shortDescription": "在对话中搜索音乐、解析链接、提取音轨",
-        "longDescription": "按歌名搜索网易云音乐，查看单曲和歌单，解析 B 站和抖音视频，并使用 Windows 本机的音频引擎提取 MP3、FLAC 或 WAV。",
+        "longDescription": "按歌名搜索网易云音乐，查看单曲和歌单，解析 B 站高画质视频与抖音视频/图集实况，并使用本机 FFmpeg 提取 MP3、FLAC 或 WAV。",
         "category": "Productivity",
         "capabilities": ["Read", "Write"],
         "defaultPrompt": ["在网易云搜索周杰伦的《稻香》", "把我给出的视频文件提取成 MP3"]

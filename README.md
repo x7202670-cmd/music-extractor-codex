@@ -1,11 +1,31 @@
-# 音乐提取器 · Codex 桌面插件
+# 音乐提取器 · AI 插件（支持 Antigravity / Codex / MCP）
 
-这个插件让 AI 在 Windows 上调用音乐提取器。需要 Windows、Node.js 24.5 或更新版本，以及独立安装的 FFmpeg。
+这个插件让 AI 在本地调用音乐提取器，无需下载原桌面客户端。需要 Node.js 24.5 或更新版本；若使用音视频转码或 B 站 DASH 合成，还需安装 [FFmpeg](https://ffmpeg.org/download.html) 并加入系统 `PATH`（或设置环境变量 `MUSIC_EXTRACTOR_FFMPEG`）。
 
 ## 安装
 
+### 方式一：Antigravity（反重力）原生插件安装
+
+1. 克隆本仓库，或解压 GitHub 下载的源码 ZIP。
+2. 在仓库根目录打开终端运行一键安装脚本，将插件、技能（`music-extractor`）与本地 MCP 配置安装到 `~/.gemini/config/plugins/music-extractor/`：
+
+   **Windows（PowerShell）**：
+   ```powershell
+   .\install-antigravity.ps1
+   ```
+   > 如未将 FFmpeg 加入 `PATH`，可附加 `-FfmpegPath "C:\path\to\ffmpeg.exe"`。
+
+   **macOS / Linux（Bash）**：
+   ```bash
+   bash ./install-antigravity.sh
+   ```
+
+3. 安装后 Antigravity 会自动发现该插件（可在自定义设置 / Plugins 中查看与开关），下一轮对话即可直接使用网易云、B 站、抖音与本地音轨提取工具。
+
+### 方式二：Codex 桌面版 / CLI 安装
+
 1. 克隆本仓库，或解压 GitHub 下载的源码 ZIP。安装 [FFmpeg](https://ffmpeg.org/download.html)，将其 `bin` 目录加入 Windows 的 `PATH`，或设置 `MUSIC_EXTRACTOR_FFMPEG` 为 `ffmpeg.exe` 的绝对路径。重启桌面版后生效。
-2. 在桌面版打开 **插件 → 添加 → 添加插件市场**，填入源码根目录的绝对路径。使用 Codex CLI 时，也可以在源码根目录运行以下命令。
+2. 在桌面版打开 **插件 → 添加 → 添加插件市场**，填入源码根目录的绝对路径。使用 Codex CLI 时，也可以在源码根目录运行以下命令：
 
    ```powershell
    codex plugin marketplace add .
@@ -13,14 +33,29 @@
 
 3. 在 **音乐提取器 · 本地插件** 中安装插件，切换到 **Codex → 此计算机**，然后在新对话中输入 `@音乐提取器`。
 
-如果桌面版提供 **设置 → MCP 服务器**，也可以直接添加一个本地 stdio 服务器。命令填 `node`，参数填源码中的 `plugins/music-extractor/mcp-server.cjs` 的绝对路径。使用 Codex CLI 时，等效命令如下，在解压根目录执行。
+如果桌面版提供 **设置 → MCP 服务器**，也可以直接添加一个本地 stdio 服务器。命令填 `node`，参数填源码中的 `plugins/music-extractor/mcp-server.cjs` 的绝对路径。使用 Codex CLI 时，等效命令如下，在源码根目录执行：
 
 ```powershell
 $entry = (Resolve-Path -LiteralPath './plugins/music-extractor/mcp-server.cjs').Path
 codex mcp add music-extractor -- node $entry
 ```
 
-本插件按 Codex 桌面本地运行方式打包。安装方式参见 [OpenAI 插件打包文档](https://developers.openai.com/plugins/build/plugins) 和 [桌面插件文档](https://developers.openai.com/plugins/deploy/desktop-only)。
+Codex 打包方式参见 [OpenAI 插件打包文档](https://developers.openai.com/plugins/build/plugins) 和 [桌面插件文档](https://developers.openai.com/plugins/deploy/desktop-only)。
+
+### 方式三：其他通用 MCP 客户端（Claude Desktop / Claude Code / Cursor 等）
+
+插件入口是标准的 MCP Stdio 服务器，可在任意支持 MCP 的客户端配置中加入以下条目（将路径替换为本机实际绝对路径）：
+
+```json
+{
+  "mcpServers": {
+    "music-extractor": {
+      "command": "node",
+      "args": ["/你的绝对路径/plugins/music-extractor/mcp-server.cjs"]
+    }
+  }
+}
+```
 
 ## 使用示例
 
