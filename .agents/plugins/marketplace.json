@@ -1,0 +1,13 @@
+{
+  "name": "music-extractor-local",
+  "interface": { "displayName": "音乐提取器 · 本地插件" },
+  "plugins": [
+    {
+      "name": "music-extractor",
+      "source": { "source": "local", "path": "./plugins/music-extractor" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity",
+      "interface": { "displayName": "音乐提取器" }
+    }
+  ]
+}

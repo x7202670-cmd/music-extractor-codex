@@ -1,0 +1,16 @@
+.env
+.env.*
+config.json
+bilibili-session.txt
+.profile/
+.verify/
+downloads/
+dist/
+*.log
+*.exe
+*.zip
+*.mp4
+*.m4a
+*.mp3
+*.flac
+*.wav
