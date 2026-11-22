@@ -328,7 +328,7 @@ async function handleSearch(keyword, limit = 30) {
 }
 
 // API 实现：解析单曲详情与播放直链
-async function handleSongParse(songInput, level = 'lossless', { officialOnly = false } = {}) {
+async function handleSongParse(songInput, level = 'lossless', { officialOnly = false, session } = {}) {
     if (!['standard', 'higher', 'exhigh', 'lossless', 'hires', 'jyeffect', 'sky', 'jymaster', 'dolby'].includes(level)) {
         return { code: 400, msg: '不支持的音质选项' };
     }
@@ -418,8 +418,9 @@ async function handleSongParse(songInput, level = 'lossless', { officialOnly = f
             const paramsHex = eapiEncrypt(eapiPath, payload);
 
             let cookieHeader = 'os=pc; appver=8.9.70; channel=netease;';
-            if (!officialOnly && appConfig.vipCookie) {
-                cookieHeader += ' ' + appConfig.vipCookie;
+            const activeCookie = officialOnly ? session : appConfig.vipCookie;
+            if (activeCookie) {
+                cookieHeader += ' ' + activeCookie;
             } else {
                 cookieHeader += ' osver=Microsoft-Windows-10-Professional-build-19045-64bit;';
             }

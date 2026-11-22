@@ -2,6 +2,7 @@
 .env.*
 config.json
 bilibili-session.txt
+netease-session.txt
 .profile/
 .verify/
 downloads/

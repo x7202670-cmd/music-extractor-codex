@@ -97,17 +97,25 @@ async function fromPlatform(action) {
     return result;
 }
 
-async function bilibiliSession() {
-    let configured = process.env.MUSIC_EXTRACTOR_BILIBILI_SESSION;
-    if (configured === undefined) {
-        const file = path.join(os.homedir(), '.music-extractor', 'bilibili-session.txt');
-        try {
-            configured = await readFile(file, 'utf8');
-        } catch (error) {
-            if (error.code === 'ENOENT') return undefined;
-            throw new Error('无法读取本地 B 站登录配置。');
-        }
+async function readConfiguredSession(envName, fileName, readError) {
+    const configured = process.env[envName];
+    if (configured !== undefined) return configured;
+    const file = path.join(os.homedir(), '.music-extractor', fileName);
+    try {
+        return await readFile(file, 'utf8');
+    } catch (error) {
+        if (error.code === 'ENOENT') return undefined;
+        throw new Error(readError);
     }
+}
+
+async function bilibiliSession() {
+    const configured = await readConfiguredSession(
+        'MUSIC_EXTRACTOR_BILIBILI_SESSION',
+        'bilibili-session.txt',
+        '无法读取本地 B 站登录配置。'
+    );
+    if (configured === undefined) return undefined;
     const value = configured.trim().replace(/^SESSDATA=/, '');
     if (!value) return undefined;
     if (!/^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]{1,4096}$/.test(value)) {
@@ -116,11 +124,31 @@ async function bilibiliSession() {
     return 'SESSDATA=' + value;
 }
 
+async function neteaseSession() {
+    const configured = await readConfiguredSession(
+        'MUSIC_EXTRACTOR_NETEASE_SESSION',
+        'netease-session.txt',
+        '无法读取本地网易云登录配置。'
+    );
+    if (configured === undefined) return undefined;
+    const trimmed = configured.trim();
+    if (!trimmed) return undefined;
+    const match = trimmed.match(/(?:^|;\s*)MUSIC_U=([A-Za-z0-9]+)(?:;|$)/i);
+    const value = match ? match[1] : trimmed.replace(/^MUSIC_U=/i, '').trim();
+    if (!/^[A-Za-z0-9]{10,4096}$/.test(value)) {
+        throw new Error('本地网易云登录配置无效，请配置 MUSIC_U 的原始值或包含 MUSIC_U 的 Cookie。');
+    }
+    return 'MUSIC_U=' + value;
+}
+
 async function resolve({ platform, input, quality, page, resolution }, signal) {
     if (platform === 'netease' && resolution !== undefined) throw new Error('resolution 仅用于 B 站和抖音视频。');
     const reference = await identify(platform, input, 'song', signal);
     signal.throwIfAborted();
-    if (platform === 'netease') return fromPlatform(() => backend.handleSongParse(reference.id, quality, { officialOnly: true }));
+    if (platform === 'netease') {
+        const session = await neteaseSession();
+        return fromPlatform(() => backend.handleSongParse(reference.id, quality, { officialOnly: true, session }));
+    }
     if (platform === 'bilibili') {
         const session = await bilibiliSession();
         return fromPlatform(() => backend.handleBilibiliParse(reference.id, {
